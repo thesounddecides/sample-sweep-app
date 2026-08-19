@@ -1,0 +1,10 @@
+# SwiftPM + build output. release.sh regenerates build/ from Sources/.
+.build/
+build/
+*.xcodeproj
+.swiftpm/
+
+.DS_Store
+# secrets never live here — notary creds are in the keychain / ~/.config/composure
+*.p8
+*.env
