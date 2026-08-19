@@ -71,6 +71,7 @@ Command Line Tools is enough.
 | `Sources/sweepcheck` | a CLI that dumps one line per file, used to validate the engine |
 | `Tools/` | icon, dmg background and OG card generators; dmg assets; the Sound Decisions lockup |
 | `reference/` | the Python reference engine the Swift one is diffed against |
+| `windows/` | the Windows app: the Python engine + a Tk window, frozen with PyInstaller, wrapped by Inno Setup; built by `.github/workflows/windows-build.yml` (see `windows/README.md`) |
 | `config.sh` + `*.sh` | build → sign → notarize → dmg → verify, in order (`release.sh` runs the chain) |
 
 ## Validating the engine

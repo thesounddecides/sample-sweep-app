@@ -1,0 +1,134 @@
+# Builds the Windows installer for Sample Sweep on a GitHub-hosted Windows runner,
+# so no Windows machine is needed on the Mac side. Output: a workflow artifact
+# containing SampleSweep-Setup-<version>.exe plus the self-test result.
+#
+# Run it from the Actions tab ("Run workflow"), or push a change under windows/
+# or reference/. Signing is optional and switches on by itself once the Azure
+# Artifact Signing (ex Trusted Signing) secrets exist (see windows/README.md, "Signing").
+
+name: Windows build
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "windows/**"
+      - "reference/**"
+      - ".github/workflows/windows-build.yml"
+
+permissions:
+  contents: read
+
+env:
+  PYTHON_VERSION: "3.12"
+
+jobs:
+  build:
+    name: Build installer (${{ github.ref_name }})
+    runs-on: windows-latest
+    env:
+      # Signing turns on when the secrets are present; forks/PRs never see them.
+      HAS_SIGNING: ${{ secrets.AZURE_TENANT_ID != '' && secrets.AZURE_CLIENT_ID != '' && secrets.AZURE_CLIENT_SECRET != '' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Version guard (windows/VERSION must equal the Mac app's)
+        shell: bash
+        run: |
+          set -euo pipefail
+          WIN_V=$(tr -d '\r\n ' < windows/VERSION)
+          MAC_V=$(grep -o 'CFBundleShortVersionString</key><string>[^<]*' build-app.sh | sed 's/.*<string>//')
+          echo "windows/VERSION = $WIN_V ; build-app.sh = $MAC_V"
+          if [ "$WIN_V" != "$MAC_V" ]; then
+            echo "::error::windows/VERSION ($WIN_V) does not match build-app.sh CFBundleShortVersionString ($MAC_V). One product, one version."
+            exit 1
+          fi
+          echo "VERSION=$WIN_V" >> "$GITHUB_ENV"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install PyInstaller
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install "pyinstaller>=6.10,<7"
+
+      - name: Engine self-test (unfrozen)
+        run: python windows/SampleSweep.py --selftest
+
+      - name: Build the app folder
+        run: |
+          python windows/tools/make_version_info.py
+          pyinstaller windows/SampleSweep.spec --noconfirm --clean --distpath windows/build/dist --workpath windows/build/work
+          Get-ChildItem "windows/build/dist/Sample Sweep" | Select-Object Name, Length | Format-Table
+
+      - name: Self-test the frozen exe (scan pool, move, restore)
+        shell: pwsh
+        run: |
+          $out = Join-Path $env:RUNNER_TEMP "selftest.json"
+          $p = Start-Process -FilePath "windows\build\dist\Sample Sweep\Sample Sweep.exe" -ArgumentList @('--selftest', "`"$out`"") -Wait -PassThru
+          if (Test-Path $out) { Get-Content $out }
+          if ($p.ExitCode -ne 0) { Write-Error "frozen self-test failed with exit code $($p.ExitCode)"; exit 1 }
+          Copy-Item $out windows/build/selftest.json
+
+      - name: Sign the application exe (Azure Artifact Signing)
+        if: env.HAS_SIGNING == 'true'
+        uses: azure/trusted-signing-action@v2
+        with:
+          azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          azure-client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
+          endpoint: ${{ secrets.SIGNING_ENDPOINT }}
+          signing-account-name: ${{ secrets.SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ secrets.SIGNING_PROFILE }}
+          files-folder: windows/build/dist/Sample Sweep
+          files-folder-filter: exe
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+
+      - name: Build the installer (Inno Setup)
+        shell: pwsh
+        run: |
+          $iscc = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { choco install innosetup --no-progress -y; }
+          & $iscc "/DMyAppVersion=$env:VERSION" windows\installer.iss
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Get-ChildItem windows\build\SampleSweep-Setup-*.exe | Select-Object Name, Length
+
+      - name: Sign the installer (Azure Artifact Signing)
+        if: env.HAS_SIGNING == 'true'
+        uses: azure/trusted-signing-action@v2
+        with:
+          azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          azure-client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
+          endpoint: ${{ secrets.SIGNING_ENDPOINT }}
+          signing-account-name: ${{ secrets.SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ secrets.SIGNING_PROFILE }}
+          files-folder: windows/build
+          files-folder-filter: exe
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+
+      - name: Checksums
+        shell: pwsh
+        run: |
+          Get-ChildItem windows\build\SampleSweep-Setup-*.exe | ForEach-Object {
+            $h = (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower()
+            "$h  $($_.Name)" | Tee-Object -FilePath "windows\build\$($_.Name).sha256"
+          }
+
+      - name: Upload installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: SampleSweep-Setup-${{ env.VERSION }}-windows${{ env.HAS_SIGNING == 'true' && '-signed' || '-unsigned' }}
+          path: |
+            windows/build/SampleSweep-Setup-*.exe
+            windows/build/SampleSweep-Setup-*.exe.sha256
+            windows/build/selftest.json
+          if-no-files-found: error
+          retention-days: 30

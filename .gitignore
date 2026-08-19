@@ -8,3 +8,8 @@ build/
 # secrets never live here — notary creds are in the keychain / ~/.config/composure
 *.p8
 *.env
+
+# Windows build (windows/SampleSweep.spec + installer.iss write here; CI rebuilds it)
+windows/build/
+__pycache__/
+*.pyc

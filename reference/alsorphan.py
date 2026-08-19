@@ -216,8 +216,15 @@ def bucket_for(rel: str) -> str:
 
 
 def scan(root: str, include_loose: bool = False, ignore_backups: bool = False,
-         deep: bool = False, workers: int | None = None, quiet: bool = False) -> tuple[list[Project], dict]:
+         deep: bool = False, workers: int | None = None, quiet: bool = False,
+         progress=None) -> tuple[list[Project], dict]:
+    """`progress`, if given, is called as progress(stage, done, total) from the
+    calling thread: ("Finding projects", 0, 0), then ("Reading Live Sets", n, N)
+    as sets parse, then ("Checking samples", n, N) per project. Used by the
+    Windows app; the CLI leaves it None."""
     t0 = time.time()
+    if progress:
+        progress("Finding projects", 0, 0)
     project_dirs = find_projects(root)
     if not project_dirs:
         return [], {"root": root, "projects": 0}
@@ -247,6 +254,8 @@ def scan(root: str, include_loose: bool = False, ignore_backups: bool = False,
 
     # Parse every reference file in parallel - this is the expensive part.
     parsed: dict[str, tuple[set[str], set[str]]] = {}
+    if progress:
+        progress("Reading Live Sets", 0, len(all_ref_files))
     with ProcessPoolExecutor(max_workers=workers) as pool:
         done = 0
         worker = functools.partial(extract_refs, deep=deep)
@@ -255,6 +264,8 @@ def scan(root: str, include_loose: bool = False, ignore_backups: bool = False,
             done += 1
             if not quiet and done % 100 == 0:
                 print(f"  {done}/{len(all_ref_files)}", end="\r", file=sys.stderr)
+            if progress and (done % 25 == 0 or done == len(all_ref_files)):
+                progress("Reading Live Sets", done, len(all_ref_files))
 
     # Global indexes: a sample referenced by ANY set anywhere is never an orphan,
     # even if it physically lives in a different project's folder.
@@ -282,7 +293,11 @@ def scan(root: str, include_loose: bool = False, ignore_backups: bool = False,
                 return d
         return None
 
-    for pdir in project_dirs:
+    if progress:
+        progress("Checking samples", 0, len(project_dirs))
+    for pi, pdir in enumerate(project_dirs):
+        if progress and pi % 10 == 0:
+            progress("Checking samples", pi, len(project_dirs))
         pr = projects[pdir]
         own_paths, own_names = set(), set()
         for a in pr.sets:
